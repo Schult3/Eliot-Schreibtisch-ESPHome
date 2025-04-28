@@ -1,0 +1,145 @@
+esphome:
+  name: buero-schreibtisch
+  friendly_name: Buero-Schreibtisch
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret schreibtisch_api_key
+
+ota:
+  - platform: esphome
+    password: !secret schreibtisch_ota_pw
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Buero-Schreibtisch"
+    password: "bqoVrbWYuiGv"
+
+captive_portal:
+
+uart:
+  id: schreibtisch_uart
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 9600
+
+external_components:
+  - source: github://eigger/espcomponents@latest
+    components: [ uartex ]
+    refresh: always
+
+uartex:
+  rx_timeout: 100ms
+  tx_delay: 50ms
+  tx_timeout: 500ms
+  tx_retry_cnt: 3
+
+  rx_header: [0xF2, 0xF2]
+  rx_footer: [0x7E]
+
+
+button:
+  - platform: template
+    name: "Stehposition"
+    icon: "mdi:walk"
+    on_press:
+      - uart.write:
+          id: schreibtisch_uart
+          data: [0xF1, 0xF1, 0x1B, 0x02, 0x05, 0x05, 0x27, 0x7E, 0xF1, 0xF1, 0x1B, 0x02, 0x05, 0x05, 0x27, 0x7E]
+  - platform: template
+    name: "Sitzposition"
+    icon: "mdi:chair-rolling"
+    on_press:
+      - uart.write:
+          id: schreibtisch_uart
+          data: [0xF1, 0xF1, 0x1B, 0x02, 0x03, 0x39, 0x59, 0x7E, 0xF1, 0xF1, 0x1B, 0x02, 0x03, 0x39, 0x59, 0x7E]
+
+cover:
+  - platform: template
+    name: "Höhenverstellung"
+    id: schreibtisch_cover
+    has_position: True
+    lambda: |-
+      float raw_position = id(schreibtisch_position).state;
+      if (raw_position > 0.0f) {
+        float calculated_position = (raw_position - 665.0f) / 620.0f;
+        float rounded_position = roundf(calculated_position * 1000.0f) / 1000.0f;
+        return rounded_position;
+      } else {
+        return 0.0f;
+      }
+    open_action:
+      - uart.write:
+          id: schreibtisch_uart
+          data: [0xF1, 0xF1, 0x1B, 0x02, 0x05, 0x05, 0x27, 0x7E, 0xF1, 0xF1, 0x1B, 0x02, 0x05, 0x05, 0x27, 0x7E]
+    close_action:
+      - uart.write:
+          id: schreibtisch_uart
+          data: [0xF1, 0xF1, 0x1B, 0x02, 0x02, 0x82, 0xA1, 0x7E, 0xF1, 0xF1, 0x1B, 0x02, 0x02, 0x82, 0xA1, 0x7E]
+    stop_action:
+      - uart.write:
+          id: schreibtisch_uart
+          data: [0xF1, 0xF1, 0x2B, 0x00, 0x2B, 0x7E, 0xF1, 0xF1, 0x2B, 0x00, 0x2B, 0x7E]
+    position_action:
+      - if:
+          condition:
+            lambda: 'return pos < id(schreibtisch_cover).position;'
+          then:
+            - lambda: |-
+                ESP_LOGD("ziel", "Zielposition: %f, Aktuelle Position: %f", ( pos ), id(schreibtisch_cover).position);
+            - uart.write:
+                id: schreibtisch_uart
+                data: [0xF1, 0xF1, 0x1B, 0x02, 0x02, 0x82, 0xA1, 0x7E, 0xF1, 0xF1, 0x1B, 0x02, 0x02, 0x82, 0xA1, 0x7E]
+            - while:
+                condition:
+                  lambda: 'return id(schreibtisch_cover).position >= ( pos + 0.02f );'
+                then:
+                  - logger.log: "am runterfahren"
+                  - delay: 0.1s
+                  - lambda: |-
+                      ESP_LOGD("ziel", "Zielposition: %f, Aktuelle Position: %f", ( pos ), id(schreibtisch_cover).position);
+            - uart.write:
+                id: schreibtisch_uart
+                data: [0xF1, 0xF1, 0x2B, 0x00, 0x2B, 0x7E, 0xF1, 0xF1, 0x2B, 0x00, 0x2B, 0x7E]
+          else:
+            - uart.write:
+                id: schreibtisch_uart
+                data: [0xF1, 0xF1, 0x1B, 0x02, 0x05, 0x05, 0x27, 0x7E, 0xF1, 0xF1, 0x1B, 0x02, 0x05, 0x05, 0x27, 0x7E]
+            - while:
+                condition:
+                  lambda: 'return id(schreibtisch_cover).position <= ( pos - 0.02f );'
+                then:
+                  - logger.log: "am hochfahren"
+                  - delay: 0.1s
+                  - lambda: |-
+                      ESP_LOGD("ziel", "Zielposition: %f, Aktuelle Position: %f", ( pos ), id(schreibtisch_cover).position);
+            - uart.write:
+                id: schreibtisch_uart
+                data: [0xF1, 0xF1, 0x2B, 0x00, 0x2B, 0x7E, 0xF1, 0xF1, 0x2B, 0x00, 0x2B, 0x7E]
+    optimistic: true
+
+
+sensor:
+  - platform: uartex
+    name: "Position"
+    id: schreibtisch_position
+    state: [0x01, 0x03] 
+    update_interval: 60s
+    command_update:
+      data: [0xF1, 0xF1, 0x07, 0x00, 0x07, 0x7E, 0xF1, 0xF1, 0x07, 0x00, 0x07, 0x7E]
+    state_number:
+      offset: 2
+      length: 2
